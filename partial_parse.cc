@@ -38,6 +38,7 @@ template <typename Allocator = MemoryPoolAllocator<>, typename StackAllocator = 
 struct FilteredDocument : Value {
   bool skipping;
   int skipDepth;
+  int numSkipped;
 
   static const size_t kDefaultStackCapacity = 1024;
   Allocator* allocator_;
@@ -46,7 +47,7 @@ struct FilteredDocument : Value {
   ParseResult parseResult_;
 
   FilteredDocument(size_t stackCapacity = kDefaultStackCapacity) : 
-      allocator_(0), ownAllocator_(0), stack_(0, stackCapacity), parseResult_()
+      skipping(0), skipDepth(0), numSkipped(0), allocator_(0), ownAllocator_(0), stack_(0, stackCapacity), parseResult_()
   {
     if (!allocator_) {
       ownAllocator_ = allocator_ = RAPIDJSON_NEW(Allocator());
@@ -73,35 +74,102 @@ struct FilteredDocument : Value {
   }
 
   // Implementation of Handler
-  bool Null() { new (stack_.template Push<Value>()) Value(); return true; }
-  bool Bool(bool b) { new (stack_.template Push<Value>()) Value(b); return true; }
-  bool Int(int i) { new (stack_.template Push<Value>()) Value(i); return true; }
-  bool Uint(unsigned i) { new (stack_.template Push<Value>()) Value(i); return true; }
-  bool Int64(int64_t i) { new (stack_.template Push<Value>()) Value(i); return true; }
-  bool Uint64(uint64_t i) { new (stack_.template Push<Value>()) Value(i); return true; }
-  bool Double(double d) { new (stack_.template Push<Value>()) Value(d); return true; }
+  bool Null() {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value();
+    }
+    return true;
+  }
+
+  bool Bool(bool b) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(b);
+    }
+    return true;
+  }
+
+  bool Int(int i) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(i);
+    }
+    return true;
+  }
+
+  bool Uint(unsigned i) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(i);
+    }
+    return true;
+  }
+
+  bool Int64(int64_t i) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(i);
+    }
+    return true;
+  }
+
+  bool Uint64(uint64_t i) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(i);
+    }
+    return true;
+  }
+
+  bool Double(double d) {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(d);
+    }
+    return true;
+  }
 
   bool RawNumber(const Ch* str, SizeType length, bool copy) { 
+    if (!skipping) {
       if (copy) 
-          new (stack_.template Push<Value>()) Value(str, length, GetAllocator());
+        new (stack_.template Push<Value>()) Value(str, length, GetAllocator());
       else
-          new (stack_.template Push<Value>()) Value(str, length);
-      return true;
+        new (stack_.template Push<Value>()) Value(str, length);
+    }
+    return true;
   }
 
   bool String(const Ch* str, SizeType length, bool copy) { 
+    if (!skipping) {
       if (copy) 
-          new (stack_.template Push<Value>()) Value(str, length, GetAllocator());
+        new (stack_.template Push<Value>()) Value(str, length, GetAllocator());
       else
-          new (stack_.template Push<Value>()) Value(str, length);
-      return true;
+        new (stack_.template Push<Value>()) Value(str, length);
+    }
+    return true;
   }
 
-  bool StartObject() { new (stack_.template Push<Value>()) Value(kObjectType); return true; }
-  
-  bool Key(const Ch* str, SizeType length, bool copy) { return String(str, length, copy); }
+  bool StartObject() {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(kObjectType);
+    } else {
+      skipDepth += 1;
+    }
+    return true;
+  }
+
+  bool Key(const Ch* str, SizeType length, bool copy) {
+    if (!skipping && std::string(str, length) == "coordinates") {
+      numSkipped++;
+      String(str, length, copy);
+      Null();
+      skipping = true;
+      skipDepth = 0;  // XXX: currently assuming we skip an array/object, not a scalar
+      return true;
+    }
+
+    if (!skipping) {
+      return String(str, length, copy);
+    }
+    return true;
+  }
 
   bool EndObject(SizeType memberCount) {
+    if (!skipping) {
       typename Value::Member* members = stack_.template Pop<typename Value::Member>(memberCount);
       // stack_.template Top<Value>()->SetObjectRaw(members, memberCount, GetAllocator());
       Value* v = stack_.template Top<Value>();
@@ -109,20 +177,41 @@ struct FilteredDocument : Value {
       for (int i = 0; i < memberCount; i++) {
         v->AddMember(members[i].name, members[i].value, GetAllocator());
       }
-      return true;
+    }
+
+    skipDepth -= 1;
+    if (skipDepth == 0) {
+      skipping = false;
+    }
+
+    return true;
   }
 
-  bool StartArray() { new (stack_.template Push<Value>()) Value(kArrayType); return true; }
-  
+  bool StartArray() {
+    if (!skipping) {
+      new (stack_.template Push<Value>()) Value(kArrayType);
+    } else {
+      skipDepth += 1;
+    }
+    return true;
+  }
+
   bool EndArray(SizeType elementCount) {
-    Value* elements = stack_.template Pop<Value>(elementCount);
-    // can't use this since it's private:
-    // stack_.template Top<Value>()->SetArrayRaw(elements, elementCount, GetAllocator());
-    Value* v = stack_.template Top<Value>();
-    v->SetArray();
-    v->Reserve(elementCount, GetAllocator());
-    for (int i = 0; i < elementCount; i++) {
-      v->PushBack(elements[i], GetAllocator());
+    if (!skipping) {
+      Value* elements = stack_.template Pop<Value>(elementCount);
+      // can't use this since it's private:
+      // stack_.template Top<Value>()->SetArrayRaw(elements, elementCount, GetAllocator());
+      Value* v = stack_.template Top<Value>();
+      v->SetArray();
+      v->Reserve(elementCount, GetAllocator());
+      for (int i = 0; i < elementCount; i++) {
+        v->PushBack(elements[i], GetAllocator());
+      }
+    } else {
+      skipDepth -= 1;
+      if (skipDepth == 0) {
+        skipping = false;
+      }
     }
     return true;
   }
@@ -150,103 +239,6 @@ struct FilteredDocument : Value {
   FilteredDocument& ParseStream(InputStream& is) {
     return ParseStream<kParseDefaultFlags, UTF8<>, InputStream>(is);
   }
-
-  /*
-  bool Null() {
-    if (!skipping) return GenericDocument::Null();
-    return true;
-  }
-
-  bool Bool(bool b) {
-    if (!skipping) return GenericDocument::Bool(b);
-    return true;
-  }
-
-  bool Int(int i) {
-    if (!skipping) return GenericDocument::Int(i);
-    return true;
-  }
-
-  bool Uint(unsigned u) {
-    if (!skipping) return GenericDocument::Uint(u);
-    return true;
-  }
-
-  bool Int64(int64_t i) {
-    if (!skipping) return GenericDocument::Int64(i);
-    return true;
-  }
-
-  bool Uint64(uint64_t u) {
-    if (!skipping) return GenericDocument::Uint64(u);
-    return true;
-  }
-
-  bool Double(double d) {
-    if (!skipping) return GenericDocument::Double(d);
-    return true;
-  }
-
-  bool RawNumber(const char* str, SizeType length, bool copy) { 
-    if (!skipping) return GenericDocument::RawNumber(str, length, copy);
-    return true;
-  }
-
-  bool String(const char* str, SizeType length, bool copy) { 
-    if (!skipping) return GenericDocument::String(str, length, copy);
-    return true;
-  }
-
-  bool StartObject() {
-    if (!skipping) return GenericDocument::StartObject();
-
-    skipDepth += 1;
-    return true;
-  }
-
-  bool Key(const char* str, SizeType length, bool copy) {
-    cerr << "Key " << str << endl;
-    if (!skipping && std::string(str, length) == "coordinates") {
-      cerr << "Found coordinates!" << endl;
-      GenericDocument::Key(str, length, copy);
-      GenericDocument::Null();
-      skipping = true;
-      skipDepth = 0;  // XXX: currently assuming we skip an array/object, not a scalar
-      return true;
-    }
-
-    if (!skipping) return GenericDocument::Key(str, length, copy);
-    return true;
-  }
-
-  bool EndObject(SizeType memberCount) {
-    if (!skipping) return GenericDocument::EndObject(memberCount);
-
-    skipDepth -= 1;
-    if (skipDepth == 0) {
-      skipping = false;
-    }
-    return true;
-  }
-
-  bool StartArray() {
-    if (!skipping) return GenericDocument::StartArray();
-
-    skipDepth += 1;
-    return true;
-  }
-
-  bool EndArray(SizeType elementCount) {
-    if (!skipping) return GenericDocument::EndArray(elementCount);
-
-    skipDepth -= 1;
-    if (skipDepth == 0) {
-      skipping = false;
-    }
-
-    return true;
-  }
-  */
 };
 
 int main(int argc, char** argv) {
@@ -268,6 +260,8 @@ int main(int argc, char** argv) {
   FilteredDocument<> d;
   d.ParseStream(is);
   fclose(fp);
+
+  // cerr << "Skipped " << d.numSkipped << " coordinate arrays." << endl;
 
   char writeBuffer[65536];
   FileWriteStream os(stdout, writeBuffer, sizeof(writeBuffer));
