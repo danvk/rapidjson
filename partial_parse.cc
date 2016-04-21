@@ -1,3 +1,17 @@
+// This is an experiment in parsing all but certain fields of a JSON file.
+// For GeoJSON files, it can be a big speedup. For example, for a ~100MB file:
+//
+//   0.20s wc -l on GeoJSON file
+//   0.50s Count features with RapidJSON SAX-style callbacks
+//   0.55s Parse Document with RapidJSON skipping coordinate arrays
+//   1.10s Parse full Document with RapidJSON
+//
+// There's significant duplication between FilteredDocument and GenericDocument.
+// This may be unavoidable because of private fields and non-virtual methods.
+//
+// This reads in a GeoJSON file and outputs a version of it to stdout with all
+// the coordinate arrays set to null.
+
 #include "include/rapidjson/document.h"
 #include "include/rapidjson/filereadstream.h"
 #include "include/rapidjson/filewritestream.h"
@@ -16,23 +30,6 @@
 
 using namespace rapidjson;
 using namespace std;
-
-/**
- * For tomorrow:
- * Create a subclass of GenericDocument with a modified Handler.
- * When it gets to a "coordinates" key, it flips a bit.
- * When this bit is flipped, value methods are no-ops.
- *    StartArray() / EndArray() / StartObject() / EndObject() track depth.
- *    Once EndArray() / EndObject() gets back to depth zero, the bit is flipped back.
- *
- * Handlers should look like:
- *
- * bool Null() {
- *   if (!skipping) return GenericDocument::Null();
- *   // ...
- *   return true;
- * }
- */
 
 template <typename Allocator = MemoryPoolAllocator<>, typename StackAllocator = CrtAllocator>
 struct FilteredDocument : Value {
@@ -171,6 +168,7 @@ struct FilteredDocument : Value {
   bool EndObject(SizeType memberCount) {
     if (!skipping) {
       typename Value::Member* members = stack_.template Pop<typename Value::Member>(memberCount);
+      // can't use this since it's private:
       // stack_.template Top<Value>()->SetObjectRaw(members, memberCount, GetAllocator());
       Value* v = stack_.template Top<Value>();
       v->SetObject();
