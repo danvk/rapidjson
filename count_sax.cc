@@ -8,6 +8,23 @@
 using namespace rapidjson;
 using namespace std;
 
+/**
+ * For tomorrow:
+ * Create a subclass of GenericDocument with a modified Handler.
+ * When it gets to a "coordinates" key, it flips a bit.
+ * When this bit is flipped, value methods are no-ops.
+ *    StartArray() / EndArray() / StartObject() / EndObject() track depth.
+ *    Once EndArray() / EndObject() gets back to depth zero, the bit is flipped back.
+ *
+ * Handlers should look like:
+ *
+ * bool Null() {
+ *   if (!skipping) return GenericDocument::Null();
+ *   // ...
+ *   return true;
+ * }
+ */
+
 struct MyHandler {
     int featureCount;
     bool wantFeature;
